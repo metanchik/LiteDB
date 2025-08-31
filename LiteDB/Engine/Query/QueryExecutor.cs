@@ -88,77 +88,99 @@ namespace LiteDB.Engine
 
             IEnumerable<BsonDocument> RunQuery()
             {
-                var snapshot = transaction.CreateSnapshot(_query.ForUpdate ? LockMode.Write : LockMode.Read, _collection, false);
-
-                // no collection, no documents
-                if (snapshot.CollectionPage == null && _source == null)
+                try
                 {
-                    // if query use Source (*) need runs with empty data source
-                    if (_query.Select.UseSource)
+                    var snapshot = transaction.CreateSnapshot(_query.ForUpdate ? LockMode.Write : LockMode.Read, _collection, false);
+
+                    // no collection, no documents
+                    if (snapshot.CollectionPage == null && _source == null)
                     {
-                        yield return _query.Select.ExecuteScalar(_pragmas.Collation).AsDocument;
+                        // if query use Source (*) need runs with empty data source
+                        if (_query.Select.UseSource)
+                        {
+                            yield return _query.Select.ExecuteScalar(_pragmas.Collation).AsDocument;
+                        }
+
+                        yield break;
                     }
 
-                    yield break;
-                }
+                    // execute optimization before run query (will fill missing _query properties instance)
+                    var optimizer = new QueryOptimization(snapshot, _query, _source, _pragmas.Collation);
 
-                // execute optimization before run query (will fill missing _query properties instance)
-                var optimizer = new QueryOptimization(snapshot, _query, _source, _pragmas.Collation);
+                    var queryPlan = optimizer.ProcessQuery();
 
-                var queryPlan = optimizer.ProcessQuery();
+                    var plan = queryPlan.GetExecutionPlan();
 
-                var plan = queryPlan.GetExecutionPlan();
+                    // if execution is just to get explan plan, return as single document result
+                    if (executionPlan)
+                    {
+                        yield return queryPlan.GetExecutionPlan();
+                        yield break;
+                    }
 
-                // if execution is just to get explan plan, return as single document result
-                if (executionPlan)
-                {
-                    yield return queryPlan.GetExecutionPlan();
-                    yield break;
-                }
+                    // get node list from query - distinct by dataBlock (avoid duplicate)
+                    var nodes = queryPlan.Index.Run(snapshot.CollectionPage, new IndexService(snapshot, _pragmas.Collation, _disk.MAX_ITEMS_COUNT));
 
-                // get node list from query - distinct by dataBlock (avoid duplicate)
-                var nodes = queryPlan.Index.Run(snapshot.CollectionPage, new IndexService(snapshot, _pragmas.Collation, _disk.MAX_ITEMS_COUNT));
+                    // get current query pipe: normal or groupby pipe
+                    var pipe = queryPlan.GetPipe(transaction, snapshot, _sortDisk, _pragmas, _disk.MAX_ITEMS_COUNT);
 
-                // get current query pipe: normal or groupby pipe
-                var pipe = queryPlan.GetPipe(transaction, snapshot, _sortDisk, _pragmas, _disk.MAX_ITEMS_COUNT);
-
-                // start cursor elapsed timer which stops on dispose
-                using var _ = _cursor.Elapsed.StartDisposable();
-
-                using (var enumerator = pipe.Pipe(nodes, queryPlan).GetEnumerator())
-                {
-                    var read = false;
+                    // start cursor elapsed timer which stops on dispose
+                    using var _ = _cursor.Elapsed.StartDisposable();
 
                     try
                     {
-                        read = enumerator.MoveNext();
-                    }
-                    catch (Exception ex)
-                    {
-                        _state.Handle(ex);
-                        throw ex;
-                    }
+                        using (var enumerator = pipe.Pipe(nodes, queryPlan).GetEnumerator())
+                        {
+                            var read = false;
 
-                    while (read)
+                            try
+                            {
+                                read = enumerator.MoveNext();
+                            }
+                            catch (Exception ex)
+                            {
+                                _state.Handle(ex);
+                                throw ex;
+                            }
+
+                            while (read)
+                            {
+                                _cursor.Fetched++;
+                                _cursor.Elapsed.Stop();
+
+                                yield return enumerator.Current;
+
+                                if (transaction.State != TransactionState.Active)
+                                    throw new LiteException(0,
+                                        $"There is no more active transaction for this cursor: {_cursor.Query.ToSQL(_cursor.Collection)}");
+
+                                _cursor.Elapsed.Start();
+
+                                try
+                                {
+                                    read = enumerator.MoveNext();
+                                }
+                                catch (Exception ex)
+                                {
+                                    _state.Handle(ex);
+                                    throw ex;
+                                }
+                            }
+                        }
+                    }
+                    finally
                     {
-                        _cursor.Fetched++;
+                        // stop cursor elapsed
                         _cursor.Elapsed.Stop();
+                    }
+                }
+                finally
+                {
+                    transaction.OpenCursors.Remove(_cursor);
 
-                        yield return enumerator.Current;
-
-                        if (transaction.State != TransactionState.Active) throw new LiteException(0, $"There is no more active transaction for this cursor: {_cursor.Query.ToSQL(_cursor.Collection)}");
-
-                        _cursor.Elapsed.Start();
-
-                        try
-                        {
-                            read = enumerator.MoveNext();
-                        }
-                        catch (Exception ex)
-                        {
-                            _state.Handle(ex);
-                            throw ex;
-                        }
+                    if (isNew)
+                    {
+                        _monitor.ReleaseTransaction(transaction);
                     }
                 }
             };
