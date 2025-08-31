@@ -117,10 +117,20 @@ namespace LiteDB
         /// </summary>
         public static unsafe void ToBytes(this Int64 value, byte[] array, int startIndex)
         {
+            uint first = (uint) value;
+            int second = (int) (value >> 32);
             fixed (byte* ptr = &array[startIndex])
             {
-                *(Int64*)ptr = value;
+                *(UInt32*)ptr = first;
             }
+            fixed (byte* ptr = &array[startIndex + 4])
+            {
+                *(Int32*)ptr = second;
+            }
+            // fixed (byte* ptr = &array[startIndex])
+            // {
+            //     *(Int64*)ptr = value;
+            // }
         }
 
         /// <summary>
@@ -150,10 +160,20 @@ namespace LiteDB
         /// </summary>
         public static unsafe void ToBytes(this UInt64 value, byte[] array, int startIndex)
         {
+            uint first = (uint) value;
+            uint second = (uint) (value >> 32);
             fixed (byte* ptr = &array[startIndex])
             {
-                *(UInt64*)ptr = value;
+                *(UInt32*)ptr = first;
             }
+            fixed (byte* ptr = &array[startIndex + 4])
+            {
+                *(UInt32*)ptr = second;
+            }
+            // fixed (byte* ptr = &array[startIndex])
+            // {
+            //     *(UInt64*)ptr = value;
+            // }
         }
 
         /// <summary>

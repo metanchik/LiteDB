@@ -46,7 +46,7 @@ namespace LiteDB.Engine
         /// <summary>
         /// Max limit of datafile (in bytes) (default: MaxValue)
         /// </summary>
-        public long LimitSize { get; private set; } = long.MaxValue;
+        public long LimitSize { get; private set; } = int.MaxValue;
 
         /// <summary>
         /// Returns date in UTC timezone from BSON deserialization (default: false == LocalTime)
